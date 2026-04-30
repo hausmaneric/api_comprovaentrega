@@ -31,6 +31,8 @@ pip install -e .
 uvicorn app.main:app --reload
 ```
 
+No Railway, o `requirements.txt` e usado para garantir a instalacao das dependencias em buildpack Python simples.
+
 O banco local sera criado em `backend/data/comprova_entrega.db`.
 
 Para receber sincronizacao do app Flutter local:
