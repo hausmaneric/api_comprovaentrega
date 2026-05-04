@@ -15,6 +15,35 @@ class Company(BaseModel):
     id: str
     name: str
     legal_name: str
+    document: Optional[str] = None
+
+
+class User(BaseModel):
+    id: str
+    company_id: str
+    name: str
+    email: str
+    role: str
+
+
+class AuthSessionResponse(BaseModel):
+    company: Company
+    user: User
+    access_token: str
+
+
+class RegisterCompanyUserRequest(BaseModel):
+    company_name: str
+    company_legal_name: str
+    company_document: str
+    user_name: str
+    user_email: str
+    password: str = Field(..., min_length=4)
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str = Field(..., min_length=4)
 
 
 class Customer(BaseModel):

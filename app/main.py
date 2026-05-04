@@ -1,7 +1,16 @@
 from fastapi import FastAPI, HTTPException, Query
 
-from .models import DashboardSummary, Delivery, DeliveryCreate, DeliveryProof, DeliveryStatus, SyncUpload
-from .repository import InMemoryRepository
+from .models import (
+    AuthSessionResponse,
+    DashboardSummary,
+    Delivery,
+    DeliveryCreate,
+    DeliveryProof,
+    DeliveryStatus,
+    LoginRequest,
+    RegisterCompanyUserRequest,
+    SyncUpload,
+)
 from .repository_sqlite import SqliteRepository
 from .settings import Settings
 
@@ -22,6 +31,24 @@ def health() -> dict[str, str]:
 @app.get("/companies")
 def list_companies():
     return repo.list_companies()
+
+
+@app.post("/auth/register", response_model=AuthSessionResponse)
+def register_company_and_user(payload: RegisterCompanyUserRequest):
+    try:
+        return repo.register_company_with_owner(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/auth/login", response_model=AuthSessionResponse)
+def login(payload: LoginRequest):
+    try:
+        return repo.login(payload)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 @app.get("/customers")

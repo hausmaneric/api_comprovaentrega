@@ -1,9 +1,11 @@
 import json
 import sqlite3
 from datetime import datetime
+from hashlib import sha256
 from pathlib import Path
 
 from .models import (
+    AuthSessionResponse,
     Company,
     Customer,
     DashboardSummary,
@@ -11,7 +13,10 @@ from .models import (
     DeliveryCreate,
     DeliveryProof,
     DeliveryStatus,
+    LoginRequest,
+    RegisterCompanyUserRequest,
     SyncUpload,
+    User,
 )
 
 
@@ -25,9 +30,112 @@ class SqliteRepository:
     def list_companies(self) -> list[Company]:
         with self._connect() as conn:
             rows = conn.execute(
-                "select id, name, legal_name from companies order by name"
+                "select id, name, legal_name, document from companies order by name"
             ).fetchall()
-        return [Company(id=row[0], name=row[1], legal_name=row[2]) for row in rows]
+        return [
+            Company(id=row[0], name=row[1], legal_name=row[2], document=row[3])
+            for row in rows
+        ]
+
+    def register_company_with_owner(
+        self, payload: RegisterCompanyUserRequest
+    ) -> AuthSessionResponse:
+        stamp = int(datetime.utcnow().timestamp())
+        company_id = f"cmp_{stamp}"
+        user_id = f"usr_{stamp}"
+        password_hash = self._hash_password(payload.password)
+
+        with self._connect() as conn:
+            existing = conn.execute(
+                "select id from users where email = ?",
+                (payload.user_email.lower(),),
+            ).fetchone()
+            if existing is not None:
+                raise ValueError("Ja existe um usuario com este email.")
+
+            conn.execute(
+                """
+                insert into companies (id, name, legal_name, document)
+                values (?, ?, ?, ?)
+                """,
+                (
+                    company_id,
+                    payload.company_name,
+                    payload.company_legal_name,
+                    payload.company_document,
+                ),
+            )
+            conn.execute(
+                """
+                insert into users (id, company_id, name, email, password_hash, role)
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    company_id,
+                    payload.user_name,
+                    payload.user_email.lower(),
+                    password_hash,
+                    "owner",
+                ),
+            )
+
+        company = Company(
+            id=company_id,
+            name=payload.company_name,
+            legal_name=payload.company_legal_name,
+            document=payload.company_document,
+        )
+        user = User(
+            id=user_id,
+            company_id=company_id,
+            name=payload.user_name,
+            email=payload.user_email.lower(),
+            role="owner",
+        )
+        return AuthSessionResponse(
+            company=company,
+            user=user,
+            access_token=self._issue_token(user_id, company_id),
+        )
+
+    def login(self, payload: LoginRequest) -> AuthSessionResponse:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                select u.id, u.company_id, u.name, u.email, u.password_hash, u.role,
+                       c.id, c.name, c.legal_name, c.document
+                from users u
+                join companies c on c.id = u.company_id
+                where u.email = ?
+                """,
+                (payload.email.lower(),),
+            ).fetchone()
+
+        if row is None:
+            raise LookupError("Usuario nao encontrado.")
+
+        if row[4] != self._hash_password(payload.password):
+            raise ValueError("Senha invalida.")
+
+        user = User(
+            id=row[0],
+            company_id=row[1],
+            name=row[2],
+            email=row[3],
+            role=row[5],
+        )
+        company = Company(
+            id=row[6],
+            name=row[7],
+            legal_name=row[8],
+            document=row[9],
+        )
+        return AuthSessionResponse(
+            company=company,
+            user=user,
+            access_token=self._issue_token(user.id, company.id),
+        )
 
     def list_customers(self, company_id: str | None = None) -> list[Customer]:
         query = "select id, company_id, name, address from customers"
@@ -159,7 +267,20 @@ class SqliteRepository:
                 create table if not exists companies (
                     id text primary key,
                     name text not null,
-                    legal_name text not null
+                    legal_name text not null,
+                    document text
+                )
+                """
+            )
+            conn.execute(
+                """
+                create table if not exists users (
+                    id text primary key,
+                    company_id text not null,
+                    name text not null,
+                    email text not null unique,
+                    password_hash text not null,
+                    role text not null
                 )
                 """
             )
@@ -211,10 +332,34 @@ class SqliteRepository:
 
             now = datetime.utcnow().isoformat()
             conn.executemany(
-                "insert into companies (id, name, legal_name) values (?, ?, ?)",
+                "insert into companies (id, name, legal_name, document) values (?, ?, ?, ?)",
                 [
-                    ("cmp_1", "Aurora", "Aurora Distribuicao Ltda"),
-                    ("cmp_2", "Log Mais", "Log Mais Solucoes SA"),
+                    ("cmp_1", "Aurora", "Aurora Distribuicao Ltda", "12.345.678/0001-90"),
+                    ("cmp_2", "Log Mais", "Log Mais Solucoes SA", "98.765.432/0001-12"),
+                ],
+            )
+            conn.executemany(
+                """
+                insert into users (id, company_id, name, email, password_hash, role)
+                values (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        "usr_1",
+                        "cmp_1",
+                        "Sara Gestora",
+                        "sara@aurora.com",
+                        self._hash_password("123456"),
+                        "owner",
+                    ),
+                    (
+                        "usr_2",
+                        "cmp_2",
+                        "Joao Operador",
+                        "joao@logmais.com",
+                        self._hash_password("123456"),
+                        "owner",
+                    ),
                 ],
             )
             conn.executemany(
@@ -316,3 +461,10 @@ class SqliteRepository:
         if proof is None:
             return None
         return json.dumps(proof.model_dump(mode="json"))
+
+    def _hash_password(self, password: str) -> str:
+        return sha256(password.encode("utf-8")).hexdigest()
+
+    def _issue_token(self, user_id: str, company_id: str) -> str:
+        raw = f"{user_id}:{company_id}:{datetime.utcnow().isoformat()}"
+        return sha256(raw.encode("utf-8")).hexdigest()
